@@ -6,7 +6,6 @@
 (function () {
   'use strict';
 
-  // === DOM Elements ===
   const form = document.getElementById('qr-form');
   const urlInput = document.getElementById('url-input');
   const errorMsg = document.getElementById('error-msg');
@@ -16,43 +15,21 @@
   const urlDisplay = document.getElementById('url-display');
   const btnDownload = document.getElementById('btn-download');
 
-  // === Config ===
-  const QR_SIZE = 256;
-  const LOGO_HEIGHT = 50;
-  const PADDING = 24;
-  const BG_COLOR = '#FFFFFF';
-  const FG_COLOR = '#1B2A6B';
+  // CONFIGURACIÓN DE ALTA CALIDAD
+  const EXPORT_SCALE = 4; // Multiplicador de resolución para descarga
+  const QR_SIZE = 1024;   // Generamos el QR internamente a gran tamaño (nativo)
+  const DISPLAY_SIZE = 256; // Tamaño visual en la web (CSS)
+  const LOGO_FINAL_HEIGHT = 50; // Altura base del logo
 
-  // Preload logo and convert to data URL to avoid tainted canvas
-  let logoLoaded = false;
-  let logoDataURL = null;
+  let highResQrCanvas = null;
   const logoImg = new Image();
-  logoImg.onload = function () {
-    // Convert to data URL to avoid CORS/tainted canvas issues
-    try {
-      var tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = logoImg.naturalWidth;
-      tmpCanvas.height = logoImg.naturalHeight;
-      var tmpCtx = tmpCanvas.getContext('2d');
-      tmpCtx.drawImage(logoImg, 0, 0);
-      logoDataURL = tmpCanvas.toDataURL('image/png');
-    } catch (e) {
-      // If conversion fails, we'll still use the image directly
-    }
-    logoLoaded = true;
-  };
-  logoImg.src = 'assets/image.png';
+  // LOGO_BASE64 está definido en js/logo.js para saltarse las restricciones Anti-Taint de file:// en navegadores
+  logoImg.src = LOGO_BASE64;
 
-  // === Generate QR ===
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    generateQR();
-  });
-
-  function generateQR() {
     const url = urlInput.value.trim();
 
-    // Validate
     if (!url) {
       showError('Por favor, introduce un enlace.');
       return;
@@ -65,18 +42,14 @@
 
     hideError();
 
-    // Hide previous result while generating
     qrResult.classList.remove('visible');
     divider.classList.remove('visible');
-
-    // Clear previous content
     canvasWrap.innerHTML = '';
 
-    // Create a temporary visible div for qrcode.js to render into
+    // 1. Generar QR en un div oculto a ALTA RESOLUCIÓN (1024px reales)
     const tempDiv = document.createElement('div');
     tempDiv.style.position = 'absolute';
     tempDiv.style.left = '-9999px';
-    tempDiv.style.top = '0';
     document.body.appendChild(tempDiv);
 
     try {
@@ -84,9 +57,9 @@
         text: url,
         width: QR_SIZE,
         height: QR_SIZE,
-        colorDark: FG_COLOR,
-        colorLight: BG_COLOR,
-        correctLevel: QRCode.CorrectLevel.H,
+        colorDark: "#1B2A6B",
+        colorLight: "#FFFFFF",
+        correctLevel: QRCode.CorrectLevel.H
       });
     } catch (err) {
       document.body.removeChild(tempDiv);
@@ -94,112 +67,116 @@
       return;
     }
 
-    // qrcode.js renders asynchronously (canvas -> img), wait for it
-    setTimeout(function () {
-      composeFinalImage(url, tempDiv);
-    }, 500);
-  }
+    setTimeout(() => {
+      highResQrCanvas = tempDiv.querySelector('canvas') || tempDiv.querySelector('img');
 
-  function composeFinalImage(url, tempDiv) {
-    // qrcode.js creates a canvas and an img inside tempDiv
-    var sourceCanvas = tempDiv.querySelector('canvas');
-    var sourceImg = tempDiv.querySelector('img');
+      if (!highResQrCanvas) {
+        document.body.removeChild(tempDiv);
+        showError('Error al generar el QR.');
+        return;
+      }
 
-    // Prefer canvas, fall back to img
-    var qrSource = sourceCanvas || sourceImg;
+      // 2. CREAR PREVIEW VISUAL (Nativo en HTML)
+      const previewCard = document.createElement('div');
+      previewCard.style.background = 'white';
+      // Ajustamos los paddings a valores visuales para la web
+      previewCard.style.padding = '24px';
+      previewCard.style.borderRadius = '12px';
+      previewCard.style.display = 'flex';
+      previewCard.style.flexDirection = 'column';
+      previewCard.style.alignItems = 'center';
 
-    if (!qrSource) {
+      // Usar imagen renderizada del QR en alta definición para pantalla
+      const visualQr = new Image();
+      if (highResQrCanvas.tagName === 'CANVAS') {
+        visualQr.src = highResQrCanvas.toDataURL();
+      } else {
+        visualQr.src = highResQrCanvas.src;
+      }
+      visualQr.style.width = DISPLAY_SIZE + "px";
+      visualQr.style.height = DISPLAY_SIZE + "px";
+      visualQr.style.display = "block";
+
+      const visualLogo = logoImg.cloneNode();
+      visualLogo.style.height = LOGO_FINAL_HEIGHT + "px";
+      visualLogo.style.marginTop = "20px";
+      visualLogo.style.display = "block";
+
+      previewCard.appendChild(visualQr);
+      previewCard.appendChild(visualLogo);
+      canvasWrap.appendChild(previewCard);
+
       document.body.removeChild(tempDiv);
-      showError('Error al generar el QR. Inténtalo de nuevo.');
-      return;
-    }
 
-    // If source is img and not yet loaded, wait for it
-    if (qrSource.tagName === 'IMG' && !qrSource.complete) {
-      qrSource.onload = function () {
-        drawFinal(url, qrSource, tempDiv);
-      };
-      return;
-    }
-
-    drawFinal(url, qrSource, tempDiv);
-  }
-
-  function drawFinal(url, qrSource, tempDiv) {
-    // Calculate logo dimensions
-    var logoAspect = logoLoaded ? (logoImg.naturalWidth / logoImg.naturalHeight) : 4;
-    var logoDrawH = LOGO_HEIGHT;
-    var logoDrawW = logoDrawH * logoAspect;
-
-    // Canvas dimensions
-    var totalW = QR_SIZE + PADDING * 2;
-    var totalH = PADDING + QR_SIZE + (logoLoaded ? 20 + logoDrawH : 0) + PADDING;
-
-    // Create final canvas
-    var canvas = document.createElement('canvas');
-    canvas.width = totalW;
-    canvas.height = totalH;
-    var ctx = canvas.getContext('2d');
-
-    // White rounded background
-    ctx.fillStyle = BG_COLOR;
-    ctx.beginPath();
-    roundRect(ctx, 0, 0, totalW, totalH, 12);
-    ctx.fill();
-
-    // Draw QR code
-    ctx.drawImage(qrSource, PADDING, PADDING, QR_SIZE, QR_SIZE);
-
-    // Function to finish and show UI
-    function finalize() {
-      // Clean up temp element
-      if (tempDiv.parentNode) document.body.removeChild(tempDiv);
-
-      // Place final canvas in the page
-      canvasWrap.innerHTML = '';
-      canvasWrap.appendChild(canvas);
-
-      // Show URL label
       urlDisplay.textContent = truncateURL(url, 40);
       urlDisplay.title = url;
-
-      // Show result section
       qrResult.classList.add('visible');
       divider.classList.add('visible');
-    }
+    }, 500);
+  });
 
-    // Draw logo centered below QR
-    if (logoLoaded) {
-      var logoX = (totalW - logoDrawW) / 2;
-      var logoY = PADDING + QR_SIZE + 20;
-      
-      if (logoDataURL) {
-        var finalLogo = new Image();
-        finalLogo.onload = function() {
-          ctx.drawImage(finalLogo, logoX, logoY, logoDrawW, logoDrawH);
-          finalize();
-        };
-        finalLogo.src = logoDataURL;
-      } else {
-        ctx.drawImage(logoImg, logoX, logoY, logoDrawW, logoDrawH);
-        finalize();
-      }
-    } else {
-      finalize();
-    }
-  }
-
-  // === Download ===
   btnDownload.addEventListener('click', function () {
-    var canvas = canvasWrap.querySelector('canvas');
-    if (!canvas) return;
+    if (!highResQrCanvas) return;
 
-    var link = document.createElement('a');
-    link.download = 'QR_CES_Ramon_y_Cajal.png';
-    link.href = canvas.toDataURL('image/png');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    // Tomar la imagen base64 cargada internamente
+    const domLogo = logoImg;
+
+    // 3. GENERAR DESCARGA PROFESIONAL
+    const qualityCanvas = document.createElement('canvas');
+    const ctx = qualityCanvas.getContext('2d');
+
+    // Mantenemos la lógica de proporciones para exportar
+    const padding = 24;
+    const logoAspect = domLogo.naturalHeight ? (domLogo.naturalWidth / domLogo.naturalHeight) : 4;
+    const logoDrawH = LOGO_FINAL_HEIGHT;
+    const logoDrawW = logoDrawH * logoAspect;
+
+    // Tamaño base (para coordinar el escalado)
+    const totalW = DISPLAY_SIZE + padding * 2;
+    const totalH = DISPLAY_SIZE + padding * 2 + LOGO_FINAL_HEIGHT + 20;
+
+    // Escalar canvas resolutivamente x4
+    qualityCanvas.width = totalW * EXPORT_SCALE;
+    qualityCanvas.height = totalH * EXPORT_SCALE;
+
+    // Fondo
+    ctx.fillStyle = "#FFFFFF";
+    roundRect(ctx, 0, 0, totalW * EXPORT_SCALE, totalH * EXPORT_SCALE, 12 * EXPORT_SCALE);
+    ctx.fill();
+
+    // Contexto en escala para pintar elementos lógicamente
+    ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
+
+    // Activar smoothing para logo original de alta res
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // QR image es internamente 1024, DISPLAY_SIZE es 256. EXPORT_SCALE = 4. 256*4 = 1024. Así que el QR calza puramente píxel a píxel!
+    ctx.drawImage(highResQrCanvas, padding, padding, DISPLAY_SIZE, DISPLAY_SIZE);
+
+    const logoX = (totalW - logoDrawW) / 2;
+    const logoY = padding + DISPLAY_SIZE + 20;
+
+    const triggerDownload = () => {
+      const link = document.createElement('a');
+      link.download = 'QR_CES_Ramon_y_Cajal.png';
+      link.href = qualityCanvas.toDataURL('image/png', 1.0);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    };
+
+    if (domLogo.complete && domLogo.naturalHeight) {
+      setTimeout(() => {
+        ctx.drawImage(domLogo, logoX, logoY, logoDrawW, logoDrawH);
+        triggerDownload();
+      }, 20); // Retardo minúsculo
+    } else {
+      domLogo.onload = () => {
+        ctx.drawImage(domLogo, logoX, logoY, logoDrawW, logoDrawH);
+        triggerDownload();
+      };
+    }
   });
 
   // === Helpers ===
